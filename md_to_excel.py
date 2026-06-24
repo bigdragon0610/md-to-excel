@@ -18,7 +18,7 @@ import re
 import sys
 import os
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side  # PatternFill は表の縞模様のみで使用
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import get_column_letter
 
@@ -31,27 +31,29 @@ except ImportError:
 
 # ---------- スタイル定義(スライドのテーマ) ----------
 THEME = {
-    "title_bg":    "232F3E",   # AWS ネイビー
-    "title_fg":    "FFFFFF",
-    "accent":      "FF9900",   # AWS オレンジ
-    "h_bg":        "F2F3F3",   # 見出しの薄いグレー
-    "text":        "16191F",
-    "table_head":  "232F3E",
-    "table_head_fg": "FFFFFF",
-    "table_stripe": "F7F8F8",
-    "border":      "D5DBDB",
+    "title":        "000000",  # タイトル文字色
+    "text":         "000000",  # 本文文字色
+    "muted":        "555555",  # 引用など補助テキスト
+    "table_stripe": "F2F2F2",  # 表の縞模様（薄いグレー）
+    "border":       "999999",  # 罫線
 }
 
-# スライドの横幅(列数)。これより内側を「キャンバス」とみなす。
-CANVAS_COLS = 12
-COL_WIDTH = 10.5            # 各列の幅(文字単位)
-TITLE_ROW_HEIGHT = 42
-IMG_MAX_WIDTH_PX = 760     # 画像の最大表示幅(px)
+CANVAS_COLS      = 12
+COL_WIDTH        = 11.0       # 各列の幅(文字単位)
+TITLE_ROW_HEIGHT = 36
+IMG_MAX_WIDTH_PX = 700
 
 
-def thin_border(color=THEME["border"]):
-    side = Side(style="thin", color=color)
+def thin_border(color=None):
+    c = color or THEME["border"]
+    side = Side(style="thin", color=c)
     return Border(left=side, right=side, top=side, bottom=side)
+
+
+def bottom_border(color=None):
+    c = color or THEME["border"]
+    side = Side(style="thin", color=c)
+    return Border(bottom=side)
 
 
 # ---------- Markdown パーサ ----------
@@ -196,19 +198,9 @@ def render_slide(ws, blocks, base_dir, row):
 
 
 def render_separator(ws, row):
-    """スライド間にオレンジの帯＋余白を挿入する。"""
-    # 余白
-    ws.row_dimensions[row].height = 10
-    row += 1
-    # オレンジ帯
-    cell = _merge_row(ws, row)
-    cell.fill = PatternFill("solid", fgColor=THEME["accent"])
-    ws.row_dimensions[row].height = 4
-    row += 1
-    # 余白
-    ws.row_dimensions[row].height = 10
-    row += 1
-    return row
+    """スライド間に余白を挿入する。"""
+    ws.row_dimensions[row].height = 24
+    return row + 1
 
 
 def _merge_row(ws, row, ncols=CANVAS_COLS):
@@ -219,37 +211,28 @@ def _merge_row(ws, row, ncols=CANVAS_COLS):
 def render_title(ws, row, text, is_main):
     cell = _merge_row(ws, row)
     cell.value = text
-    if is_main:
-        cell.font = Font(name="Meiryo", size=24, bold=True, color=THEME["title_fg"])
-        cell.fill = PatternFill("solid", fgColor=THEME["title_bg"])
-        ws.row_dimensions[row].height = TITLE_ROW_HEIGHT + 8
-    else:
-        cell.font = Font(name="Meiryo", size=18, bold=True, color=THEME["title_fg"])
-        cell.fill = PatternFill("solid", fgColor=THEME["title_bg"])
-        ws.row_dimensions[row].height = TITLE_ROW_HEIGHT
-    cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-    # アクセントの下線(オレンジの帯)
-    accent = _merge_row(ws, row + 1)
-    accent.fill = PatternFill("solid", fgColor=THEME["accent"])
-    ws.row_dimensions[row + 1].height = 5
-    return row + 3
+    size = 18 if is_main else 14
+    cell.font = Font(name="Meiryo", size=size, bold=True, color=THEME["title"])
+    cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[row].height = TITLE_ROW_HEIGHT if is_main else TITLE_ROW_HEIGHT - 8
+    return row + 2
 
 
 def render_h3(ws, row, text):
     cell = _merge_row(ws, row)
-    cell.value = "▍ " + text
-    cell.font = Font(name="Meiryo", size=13, bold=True, color=THEME["accent"])
+    cell.value = text
+    cell.font = Font(name="Meiryo", size=11, bold=True, color=THEME["text"])
     cell.alignment = Alignment(horizontal="left", vertical="center")
-    ws.row_dimensions[row].height = 26
+    ws.row_dimensions[row].height = 22
     return row + 1
 
 
-def render_bullet(ws, row, content, marker="●"):
+def render_bullet(ws, row, content, marker="・"):
     indent = content["indent"]
-    cell = ws.cell(row=row, column=1 + indent)
-    ws.merge_cells(start_row=row, start_column=1 + indent, end_row=row, end_column=CANVAS_COLS)
-    prefix = ("    " * indent)
-    cell.value = f"{prefix}{marker}  {content['text']}"
+    col = 1 + indent
+    ws.merge_cells(start_row=row, start_column=col, end_row=row, end_column=CANVAS_COLS)
+    cell = ws.cell(row=row, column=col)
+    cell.value = ("　" * indent) + marker + content["text"]
     cell.font = Font(name="Meiryo", size=11, color=THEME["text"])
     cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
     ws.row_dimensions[row].height = 22
@@ -267,11 +250,10 @@ def render_text(ws, row, text):
 
 def render_quote(ws, row, text):
     cell = _merge_row(ws, row)
-    cell.value = "  " + text
-    cell.font = Font(name="Meiryo", size=11, italic=True, color="5F6B7A")
-    cell.fill = PatternFill("solid", fgColor=THEME["h_bg"])
-    cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
-    ws.row_dimensions[row].height = 28
+    cell.value = text
+    cell.font = Font(name="Meiryo", size=11, color=THEME["muted"])
+    cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=2)
+    ws.row_dimensions[row].height = 24
     return row + 2
 
 
@@ -279,7 +261,6 @@ def render_table(ws, row, rows):
     if not rows:
         return row
     ncols = max(len(r) for r in rows)
-    # テーブルは キャンバス幅に合わせて列を割り当てる
     span = max(1, CANVAS_COLS // ncols)
     border = thin_border()
     for ri, r in enumerate(rows):
@@ -291,14 +272,11 @@ def render_table(ws, row, rows):
             cell = ws.cell(row=row, column=start_col)
             cell.value = r[ci] if ci < len(r) else ""
             if is_head:
-                cell.font = Font(name="Meiryo", size=11, bold=True, color=THEME["table_head_fg"])
-                cell.fill = PatternFill("solid", fgColor=THEME["table_head"])
+                cell.font = Font(name="Meiryo", size=11, bold=True, color=THEME["text"])
+                cell.fill = PatternFill("solid", fgColor=THEME["table_stripe"])
             else:
-                cell.font = Font(name="Meiryo", size=10.5, color=THEME["text"])
-                if ri % 2 == 0:
-                    cell.fill = PatternFill("solid", fgColor=THEME["table_stripe"])
+                cell.font = Font(name="Meiryo", size=11, color=THEME["text"])
             cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
-            # 罫線を結合範囲の全セルに付与
             for cc in range(start_col, end_col + 1):
                 ws.cell(row=row, column=cc).border = border
         ws.row_dimensions[row].height = 26
