@@ -17,16 +17,31 @@ md_to_excel.py — Markdown(画像付き) を「Excel上のスライド」風 .x
 import re
 import sys
 import os
+import tempfile
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side  # PatternFill は表の縞模様のみで使用
+from openpyxl.styles import Font, Alignment, Border, Side
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import get_column_letter
 
 try:
-    from PIL import Image as PILImage
+    from PIL import Image as PILImage, ImageDraw, ImageFont
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
+
+# ヒラギノ（macOS）→ Arial Unicode（Windows/Linux）の順で探す
+_FONT_CANDIDATES = [
+    "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+    "/System/Library/Fonts/ヒラギノ角ゴ ProN W3.ttc",
+    "/System/Library/Fonts/Arial Unicode.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+]
+
+def _pil_font(size):
+    for path in _FONT_CANDIDATES:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
 
 
 # ---------- スタイル定義(スライドのテーマ) ----------
@@ -257,31 +272,77 @@ def render_quote(ws, row, text):
     return row + 2
 
 
+def _table_to_image(rows):
+    """表を PIL Image として描画して返す。"""
+    FONT_SIZE  = 14
+    PAD        = 10
+    ROW_HEIGHT = 36
+    MIN_COL_W  = 60
+    MAX_IMG_W  = 900
+    BORDER_CLR = (153, 153, 153)
+    HEAD_BG    = (242, 242, 242)
+    WHITE      = (255, 255, 255)
+    TEXT_CLR   = (0, 0, 0)
+
+    font      = _pil_font(FONT_SIZE)
+    font_bold = _pil_font(FONT_SIZE)
+    ncols     = max(len(r) for r in rows)
+
+    dummy = ImageDraw.Draw(PILImage.new("RGB", (1, 1)))
+    col_widths = []
+    for ci in range(ncols):
+        w = MIN_COL_W
+        for ri, r in enumerate(rows):
+            text = r[ci] if ci < len(r) else ""
+            f = font_bold if ri == 0 else font
+            bbox = dummy.textbbox((0, 0), text, font=f)
+            w = max(w, bbox[2] - bbox[0] + PAD * 2)
+        col_widths.append(w)
+
+    total_w = sum(col_widths)
+    if total_w > MAX_IMG_W:
+        scale = MAX_IMG_W / total_w
+        col_widths = [max(MIN_COL_W, int(w * scale)) for w in col_widths]
+        total_w = sum(col_widths)
+
+    img = PILImage.new("RGB", (total_w + 1, ROW_HEIGHT * len(rows) + 1), WHITE)
+    draw = ImageDraw.Draw(img)
+
+    y = 0
+    for ri, r in enumerate(rows):
+        x = 0
+        is_head = (ri == 0)
+        for ci in range(ncols):
+            cw = col_widths[ci]
+            draw.rectangle([x, y, x + cw, y + ROW_HEIGHT], fill=HEAD_BG if is_head else WHITE)
+            draw.rectangle([x, y, x + cw, y + ROW_HEIGHT], outline=BORDER_CLR)
+            text = r[ci] if ci < len(r) else ""
+            f = font_bold if is_head else font
+            draw.text((x + PAD, y + PAD), text, font=f, fill=TEXT_CLR)
+            x += cw
+        y += ROW_HEIGHT
+
+    return img
+
+
 def render_table(ws, row, rows):
     if not rows:
         return row
-    ncols = max(len(r) for r in rows)
-    span = max(1, CANVAS_COLS // ncols)
-    border = thin_border()
-    for ri, r in enumerate(rows):
-        is_head = (ri == 0)
-        for ci in range(ncols):
-            start_col = 1 + ci * span
-            end_col = start_col + span - 1 if ci < ncols - 1 else CANVAS_COLS
-            ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
-            cell = ws.cell(row=row, column=start_col)
-            cell.value = r[ci] if ci < len(r) else ""
-            if is_head:
-                cell.font = Font(name="Meiryo", size=11, bold=True, color=THEME["text"])
-                cell.fill = PatternFill("solid", fgColor=THEME["table_stripe"])
-            else:
-                cell.font = Font(name="Meiryo", size=11, color=THEME["text"])
-            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
-            for cc in range(start_col, end_col + 1):
-                ws.cell(row=row, column=cc).border = border
-        ws.row_dimensions[row].height = 26
-        row += 1
-    return row + 1
+    if not HAS_PIL:
+        return row  # Pillow がない場合はスキップ
+
+    img = _table_to_image(rows)
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tmp.name)
+    tmp.close()
+
+    xl_img = XLImage(tmp.name)
+    xl_img.width, xl_img.height = img.width, img.height
+    ws.add_image(xl_img, f"B{row}")
+    rows_needed = int(img.height / 19) + 1
+    for r in range(row, row + rows_needed):
+        ws.row_dimensions[r].height = 19
+    return row + rows_needed + 1
 
 
 def render_image(ws, row, content, base_dir):
